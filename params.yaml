@@ -1,0 +1,28 @@
+data:
+  dataset: "CICIDS"          # or "UNSW"
+
+preprocess:
+  max_rows: null             # None → use full dataset
+  # For mini dataset: use --mini flag when running preprocess.py
+  # Example: python -m src.data.preprocess --mini --max-samples 50000
+
+train:
+  # Path to processed dataset
+  dataset_dir: "data/processed/cicids"
+
+  # Model saving paths
+  pretrained_path: "models/weights/cicids_pretrained.pt"
+  finetuned_path: "models/weights/cicids_finetuned.pt"
+
+  # Training hyperparameters
+  batch_size: 256
+  n_classes: 2
+  epochs_pretrain: 1          # already done
+  epochs_finetune: 10         # adjust depending on GPU
+  learning_rate: 1e-4
+
+  # Device config
+  use_cuda: true
+
+  # Logging
+  experiment_name: "tabular_expert_finetune"

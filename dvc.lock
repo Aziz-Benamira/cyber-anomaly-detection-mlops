@@ -1,0 +1,66 @@
+schema: '2.0'
+stages:
+  preprocess_unsw:
+    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m 
+      src.data.preprocess --params 
+      C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out 
+      C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
+    deps:
+    - path: data\raw\UNSW_NB15_testing-set.csv
+      hash: md5
+      md5: e55caabaa6cd4a8f1c06a227bcfababc
+      size: 32293018
+    - path: data\raw\UNSW_NB15_training-set.csv
+      hash: md5
+      md5: e0beea40262e46168cdb81476dbc27b4
+      size: 15380800
+    - path: params.yaml
+      hash: md5
+      md5: 97e82376b1ede96585b84c06f89935e9
+      size: 112
+    - path: src\data\dataset.py
+      hash: md5
+      md5: e35f14ea597f3f69059561be7df48094
+      size: 1076
+    - path: src\data\preprocess.py
+      hash: md5
+      md5: 47ce87a541a4e3a143da10409e37166c
+      size: 3015
+    - path: src\data\schema_unsw.py
+      hash: md5
+      md5: 0589cd8608bd8a099b60c538cfcaf6c1
+      size: 1145
+    outs:
+    - path: data\processed\unsw
+      hash: md5
+      md5: 52be5532678dff14e2b272b13ae0be85.dir
+      size: 426714922
+      nfiles: 3
+  preprocess_cicids:
+    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m 
+      src.data.preprocess --params 
+      C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out 
+      C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
+    deps:
+    - path: params.yaml
+      hash: md5
+      md5: 9a3054d520692c338e6385b0454aeeff
+      size: 114
+    - path: src\data\dataset.py
+      hash: md5
+      md5: e35f14ea597f3f69059561be7df48094
+      size: 1076
+    - path: src\data\preprocess.py
+      hash: md5
+      md5: aa9a2cea5d53af5d6400ed9c91153bea
+      size: 3123
+    - path: src\data\schema_cicids.py
+      hash: md5
+      md5: 2c76d709b4c7006cb1c5504a982dc5c9
+      size: 2272
+    outs:
+    - path: data\processed\cicids
+      hash: md5
+      md5: 3dceaacf1971389bd5c868f94bef3d7b.dir
+      size: 1791354179
+      nfiles: 3

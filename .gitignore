@@ -1,0 +1,260 @@
+# ============================================
+# Cyber Anomaly Detection MLOps Project
+# ============================================
+
+# ============================================
+# DATA FILES (DO NOT COMMIT!)
+# ============================================
+# Raw datasets (CICIDS, UNSW - very large CSV files)
+data/raw/*.csv
+data/raw/*.pcap
+data/raw/*.pcap_ISCX.csv
+
+# Processed datasets (numpy arrays, preprocessors)
+data/processed/**/*.npy
+data/processed/**/*.joblib
+data/interim/
+
+# Any data archives
+*.zip
+*.tar.gz
+*.7z
+data/*.zip
+data/*.tar.gz
+
+# ============================================
+# MODEL WEIGHTS & ARTIFACTS
+# ============================================
+# PyTorch model weights (can be large)
+models/weights/*.pt
+models/weights/*.pth
+models/weights/*.ckpt
+
+# Model artifacts
+*.pkl
+*.pickle
+*.h5
+
+# MLflow artifacts (tracked separately)
+mlruns/
+mlartifacts/
+
+# ============================================
+# PYTHON
+# ============================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+*.venv
+
+# Conda environments
+.conda/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+*.ipynb_backup
+
+# ============================================
+# ML/DL FRAMEWORKS
+# ============================================
+# TensorBoard logs
+runs/
+logs/
+tb_logs/
+lightning_logs/
+
+# Weights & Biases
+wandb/
+
+# ============================================
+# DVC (Data Version Control)
+# ============================================
+# DVC cache (don't commit the actual data)
+.dvc/cache/
+.dvc/tmp/
+
+# Keep .dvc files (metadata) but not the cache
+!.dvc/.gitignore
+!.dvc/config
+
+# ============================================
+# DOCKER
+# ============================================
+# Docker volumes
+docker/volumes/
+*.dockerignore~
+
+# ============================================
+# IDEs & EDITORS
+# ============================================
+# VSCode
+.vscode/
+.history/
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS SPECIFIC
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ============================================
+# ENVIRONMENT & SECRETS
+# ============================================
+.env
+.env.local
+.env.*.local
+*.env
+.envrc
+
+# Credentials
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# ============================================
+# MONITORING & LOGS
+# ============================================
+# Application logs
+*.log
+logs/
+*.log.*
+
+# Prometheus data
+prometheus/data/
+
+# Grafana data
+grafana/data/
+grafana/plugins/
+
+# ============================================
+# REPORTS & OUTPUTS
+# ============================================
+# Generated reports (keep structure, not files)
+reports/*.json
+reports/*.html
+reports/figures/*.png
+reports/figures/*.jpg
+reports/figures/*.pdf
+
+# ============================================
+# TEMPORARY & MISC
+# ============================================
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+tmp/
+temp/
+
+# Archives
+*.tar
+*.rar
+
+# Lock files (keep if using specific versions)
+# Uncomment if you want deterministic builds:
+# poetry.lock
+# Pipfile.lock
+
+# ============================================
+# PROJECT SPECIFIC
+# ============================================
+# Large model checkpoints during training
+checkpoints/
+
+# Experiment outputs
+experiments/
+outputs/
+
+# Local configuration overrides
+config.local.yaml
+params.local.yaml
+
+# ============================================
+# KEEP THESE (Force include important files)
+# ============================================
+# Keep DVC metadata files
+!*.dvc
+!.dvc/config
+!.dvc/.gitignore
+
+# Keep empty directories with .gitkeep
+!**/.gitkeep
+
+# Keep README files
+!**/README.md
+
+# Keep example configs
+!config/*.example.yaml
+!.env.example

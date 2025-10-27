@@ -1,0 +1,22 @@
+stages:
+  preprocess_unsw:
+    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m src.data.preprocess --params C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
+    deps:
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/preprocess.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/dataset.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/schema_unsw.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/raw/UNSW_NB15_training-set.csv
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/raw/UNSW_NB15_testing-set.csv
+    outs:
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed/unsw
+
+  preprocess_cicids:
+    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m src.data.preprocess --params C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
+    deps:
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/preprocess.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/dataset.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/schema_cicids.py
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml
+    outs:
+      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed/cicids
