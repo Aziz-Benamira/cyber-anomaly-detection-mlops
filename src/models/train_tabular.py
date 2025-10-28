@@ -7,8 +7,56 @@ from torch.utils.data import DataLoader, TensorDataset, Subset
 from pathlib import Path
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    confusion_matrix, 
+    precision_score, 
+    recall_score, 
+    f1_score,
+    precision_recall_curve,
+    auc,
+    roc_auc_score
+)
+import numpy as np
 
 from src.models.tabular_expert import TabularExpert, TabularExpertConfig
+
+
+# ============================================================
+#  Class Weight Calculation for Imbalanced Data
+# ============================================================
+def calculate_class_weights(y_tensor, device):
+    """
+    Calculate class weights for imbalanced datasets.
+    
+    Formula: weight_i = total_samples / (num_classes * count_i)
+    This heavily penalizes errors on minority class.
+    
+    Args:
+        y_tensor: Label tensor (torch.Tensor)
+        device: Device to put weights on
+        
+    Returns:
+        torch.Tensor: Class weights [weight_class_0, weight_class_1]
+    """
+    # Get class counts
+    unique, counts = torch.unique(y_tensor, return_counts=True)
+    total_samples = len(y_tensor)
+    num_classes = len(unique)
+    
+    # Calculate weights
+    weights = torch.zeros(num_classes, device=device)
+    for class_idx, count in zip(unique, counts):
+        weights[class_idx] = total_samples / (num_classes * count)
+    
+    print(f"\n[INFO] Class Weight Calculation:")
+    print(f"       Total samples: {total_samples:,}")
+    print(f"       Class distribution:")
+    for class_idx, count in zip(unique, counts):
+        print(f"         Class {class_idx}: {count:,} samples ({count/total_samples*100:.1f}%) -> weight={weights[class_idx]:.4f}")
+    print(f"       Weight ratio (attack/normal): {weights[1]/weights[0]:.2f}x")
+    print(f"       ⚠️  Minority class errors will be penalized {weights[1]/weights[0]:.2f}x more!\n")
+    
+    return weights
 
 
 # ============================================================
@@ -103,8 +151,12 @@ def train_self_supervised(model, dataloader, optimizer, device):
 
 
 def train_supervised(model, dataloader, optimizer, criterion, device):
+    """Train with supervised classification loss"""
     model.train()
-    total_loss, correct, total = 0, 0, 0
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+    all_probs = []
 
     for X, y in tqdm(dataloader, desc="Fine-tuning"):
         X, y = X.to(device), y.to(device)
@@ -118,16 +170,29 @@ def train_supervised(model, dataloader, optimizer, criterion, device):
         optimizer.step()
 
         total_loss += loss.item()
+        
+        # Collect predictions for metrics
+        probs = torch.softmax(logits, dim=1)
         preds = logits.argmax(1)
-        correct += (preds == y).sum().item()
-        total += y.size(0)
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(y.cpu().numpy())
+        all_probs.extend(probs[:, 1].detach().cpu().numpy())  # Probability of attack class
 
-    return total_loss / len(dataloader), correct / total
+    # Calculate metrics
+    metrics = calculate_metrics(all_labels, all_preds, all_probs)
+    metrics['loss'] = total_loss / len(dataloader)
+    
+    return metrics
 
 
 def evaluate(model, dataloader, criterion, device):
+    """Evaluate with comprehensive metrics (not just accuracy!)"""
     model.eval()
-    total_loss, correct, total = 0, 0, 0
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
@@ -137,10 +202,81 @@ def evaluate(model, dataloader, criterion, device):
             logits = model.forward_classify(X_num, X_cat)
             loss = criterion(logits, y)
             total_loss += loss.item()
+            
+            # Collect predictions
+            probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(1)
-            correct += (preds == y).sum().item()
-            total += y.size(0)
-    return total_loss / len(dataloader), correct / total
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(y.cpu().numpy())
+            all_probs.extend(probs[:, 1].cpu().numpy())
+    
+    # Calculate comprehensive metrics
+    metrics = calculate_metrics(all_labels, all_preds, all_probs)
+    metrics['loss'] = total_loss / len(dataloader)
+    
+    return metrics
+
+
+def calculate_metrics(y_true, y_pred, y_prob):
+    """
+    Calculate comprehensive metrics for imbalanced anomaly detection.
+    
+    Focus on ATTACK class (class 1) metrics:
+    - Precision: Of predicted attacks, how many are real?
+    - Recall: Of real attacks, how many did we catch?
+    - F1-Score: Harmonic mean of precision and recall
+    - AUC-PR: Area under precision-recall curve
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        y_prob: Predicted probabilities for attack class
+        
+    Returns:
+        dict: Comprehensive metrics
+    """
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    y_prob = np.array(y_prob)
+    
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    
+    # Per-class metrics (focus on attack class = 1)
+    precision = precision_score(y_true, y_pred, pos_label=1, zero_division=0)
+    recall = recall_score(y_true, y_pred, pos_label=1, zero_division=0)
+    f1 = f1_score(y_true, y_pred, pos_label=1, zero_division=0)
+    
+    # AUC-PR (more informative than ROC-AUC for imbalanced data)
+    try:
+        precisions, recalls, _ = precision_recall_curve(y_true, y_prob, pos_label=1)
+        auc_pr = auc(recalls, precisions)
+    except:
+        auc_pr = 0.0
+    
+    # ROC-AUC (for reference)
+    try:
+        roc_auc = roc_auc_score(y_true, y_prob)
+    except:
+        roc_auc = 0.0
+    
+    # Overall accuracy (less important for imbalanced data!)
+    accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+    
+    return {
+        'accuracy': accuracy,  # Keep for comparison, but don't rely on it!
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'auc_pr': auc_pr,
+        'roc_auc': roc_auc,
+        'confusion_matrix': cm,
+        'tp': int(tp),
+        'fp': int(fp),
+        'tn': int(tn),
+        'fn': int(fn),
+    }
 
 
 # ============================================================
@@ -225,7 +361,14 @@ def main(params_path="params.yaml", stage="pretrain"):
     print(f"[INFO] Model parameters: {total_params:,} (trainable: {trainable_params:,})")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["train"]["learning_rate"])
-    criterion = nn.CrossEntropyLoss()
+    
+    # ===== WEIGHTED LOSS for IMBALANCED DATA =====
+    # Calculate class weights from training data
+    train_labels = train_dl.dataset.dataset.tensors[1][train_dl.dataset.indices]
+    class_weights = calculate_class_weights(train_labels, device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    print(f"[INFO] Using WEIGHTED CrossEntropyLoss for imbalanced data")
+    print(f"       Class weights: {class_weights.cpu().numpy()}")
 
     # Start MLflow experiment
     experiment_name = f"tabular_expert_{dataset}"
@@ -233,6 +376,7 @@ def main(params_path="params.yaml", stage="pretrain"):
 
     with mlflow.start_run(run_name=f"{stage}_{dataset}"):
 
+        # Log model config and training params
         mlflow.log_params({
             "dataset": dataset,
             "stage": stage,
@@ -243,6 +387,9 @@ def main(params_path="params.yaml", stage="pretrain"):
             "batch_size": params["train"]["batch_size"],
             "lr": params["train"]["learning_rate"],
             "mask_ratio": cfg.mask_ratio,
+            "weighted_loss": True,
+            "class_weight_0": float(class_weights[0]),
+            "class_weight_1": float(class_weights[1]),
         })
 
         if stage == "pretrain":
@@ -270,26 +417,69 @@ def main(params_path="params.yaml", stage="pretrain"):
 
             epochs = params["train"]["epochs_finetune"]
             print(f"\n[INFO] Starting FINETUNE stage for {epochs} epoch(s)...")
+            print(f"       Metrics: F1-Score, Precision, Recall, AUC-PR (attack class)")
+            print(f"       {'='*60}\n")
+            
+            best_f1 = 0.0
             
             for epoch in range(epochs):
-                train_loss, train_acc = train_supervised(model, train_dl, optimizer, criterion, device)
-                val_loss, val_acc = evaluate(model, val_dl, criterion, device)
+                train_metrics = train_supervised(model, train_dl, optimizer, criterion, device)
+                val_metrics = evaluate(model, val_dl, criterion, device)
 
+                # Log ALL metrics to MLflow
                 mlflow.log_metrics({
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc
+                    "train_loss": train_metrics['loss'],
+                    "train_f1": train_metrics['f1_score'],
+                    "train_precision": train_metrics['precision'],
+                    "train_recall": train_metrics['recall'],
+                    "train_auc_pr": train_metrics['auc_pr'],
+                    "train_accuracy": train_metrics['accuracy'],  # For reference
+                    "val_loss": val_metrics['loss'],
+                    "val_f1": val_metrics['f1_score'],
+                    "val_precision": val_metrics['precision'],
+                    "val_recall": val_metrics['recall'],
+                    "val_auc_pr": val_metrics['auc_pr'],
+                    "val_accuracy": val_metrics['accuracy'],  # For reference
                 }, step=epoch)
 
-                print(f"[Epoch {epoch+1}/{epochs}] Train Acc={train_acc:.3f} | Val Acc={val_acc:.3f}")
+                # Console output: FOCUS ON F1, PRECISION, RECALL
+                print(f"[Epoch {epoch+1}/{epochs}]")
+                print(f"  Train -> F1={train_metrics['f1_score']:.3f} | P={train_metrics['precision']:.3f} | R={train_metrics['recall']:.3f} | AUC-PR={train_metrics['auc_pr']:.3f}")
+                print(f"  Val   -> F1={val_metrics['f1_score']:.3f} | P={val_metrics['precision']:.3f} | R={val_metrics['recall']:.3f} | AUC-PR={val_metrics['auc_pr']:.3f}")
+                print(f"  Val Confusion Matrix:")
+                print(f"    {val_metrics['confusion_matrix']}")
+                print(f"    TN={val_metrics['tn']}, FP={val_metrics['fp']}, FN={val_metrics['fn']}, TP={val_metrics['tp']}")
+                print()
+                
+                # Track best F1 score
+                if val_metrics['f1_score'] > best_f1:
+                    best_f1 = val_metrics['f1_score']
 
+            # Save final model
             Path("models/weights").mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), finetuned_path)
             mlflow.log_artifact(finetuned_path)
             
+            # Log final confusion matrix as text
+            mlflow.log_text(str(val_metrics['confusion_matrix']), "confusion_matrix.txt")
+            
             print(f"\n✅ Finetune complete! Saved to: {finetuned_path}")
-            print(f"   Final performance: Train={train_acc:.3f} | Val={val_acc:.3f}")
+            print(f"\n{'='*60}")
+            print(f"FINAL RESULTS (Validation Set - Attack Class Metrics):")
+            print(f"{'='*60}")
+            print(f"  F1-Score:    {val_metrics['f1_score']:.3f} (BEST: {best_f1:.3f})")
+            print(f"  Precision:   {val_metrics['precision']:.3f}")
+            print(f"  Recall:      {val_metrics['recall']:.3f}")
+            print(f"  AUC-PR:      {val_metrics['auc_pr']:.3f}")
+            print(f"  ROC-AUC:     {val_metrics['roc_auc']:.3f}")
+            print(f"  Accuracy:    {val_metrics['accuracy']:.3f} (less important for imbalanced data)")
+            print(f"\n  Confusion Matrix:")
+            print(f"    {val_metrics['confusion_matrix']}")
+            print(f"    True Positives  (TP): {val_metrics['tp']:,} (attacks caught)")
+            print(f"    False Negatives (FN): {val_metrics['fn']:,} (attacks missed)")
+            print(f"    False Positives (FP): {val_metrics['fp']:,} (false alarms)")
+            print(f"    True Negatives  (TN): {val_metrics['tn']:,} (correctly identified normal)")
+            print(f"{'='*60}\n")
 
         else:
             raise ValueError("Stage must be 'pretrain' or 'finetune'")

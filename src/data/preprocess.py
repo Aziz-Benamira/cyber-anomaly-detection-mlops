@@ -46,7 +46,8 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
         schema: Dataset schema (UNSW or CICIDS)
         out_dir: Output directory
         max_samples: Maximum number of samples to keep (None = all)
-        balance_classes: If True and max_samples is set, balance attack/normal classes
+        balance_classes: If True and max_samples is set, balance attack/normal classes (50/50).
+                        If False, preserve original class distribution (IMBALANCED).
     """
 
     # Nettoyage colonnes (strip pour CICIDS qui a des espaces)
@@ -73,29 +74,79 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
         else:
             y = y.astype(np.int64)
     
-    # ===== BALANCED SAMPLING (for mini datasets) =====
-    if max_samples is not None and y is not None and balance_classes:
-        # Get indices for each class
-        normal_idx = np.where(y == 0)[0]
-        attack_idx = np.where(y == 1)[0]
+    # ===== SAMPLING STRATEGIES =====
+    if max_samples is not None and y is not None:
+        if balance_classes:
+            # BALANCED SAMPLING (for quick experiments)
+            print(f"[INFO] BALANCED sampling mode (50/50 split)")
+            normal_idx = np.where(y == 0)[0]
+            attack_idx = np.where(y == 1)[0]
+            
+            samples_per_class = max_samples // 2
+            
+            # Sample from each class
+            if len(normal_idx) > samples_per_class:
+                normal_idx = np.random.choice(normal_idx, samples_per_class, replace=False)
+            if len(attack_idx) > samples_per_class:
+                attack_idx = np.random.choice(attack_idx, samples_per_class, replace=False)
+            
+            # Combine and shuffle
+            selected_idx = np.concatenate([normal_idx, attack_idx])
+            np.random.shuffle(selected_idx)
+            
+            X = X.iloc[selected_idx]
+            y = y.iloc[selected_idx] if hasattr(y, 'iloc') else y[selected_idx]
+            
+            print(f"       Balanced sampling: {len(selected_idx)} samples")
+            print(f"       Class 0: {(y==0).sum()}, Class 1: {(y==1).sum()}")
         
-        samples_per_class = max_samples // 2
-        
-        # Sample from each class
-        if len(normal_idx) > samples_per_class:
-            normal_idx = np.random.choice(normal_idx, samples_per_class, replace=False)
-        if len(attack_idx) > samples_per_class:
-            attack_idx = np.random.choice(attack_idx, samples_per_class, replace=False)
-        
-        # Combine and shuffle
-        selected_idx = np.concatenate([normal_idx, attack_idx])
-        np.random.shuffle(selected_idx)
-        
-        X = X.iloc[selected_idx]
-        y = y.iloc[selected_idx] if hasattr(y, 'iloc') else y[selected_idx]
-        
-        print(f"[INFO] Balanced sampling: {len(selected_idx)} samples")
-        print(f"       Class 0: {(y==0).sum()}, Class 1: {(y==1).sum()}")
+        else:
+            # IMBALANCED SAMPLING (preserves original distribution)
+            print(f"[INFO] IMBALANCED sampling mode (preserving natural distribution)")
+            
+            # Get original distribution
+            total_samples = len(y)
+            normal_count = (y == 0).sum()
+            attack_count = (y == 1).sum()
+            normal_ratio = normal_count / total_samples
+            attack_ratio = attack_count / total_samples
+            
+            print(f"       Original distribution:")
+            print(f"       Normal: {normal_count:,} ({normal_ratio*100:.1f}%)")
+            print(f"       Attack: {attack_count:,} ({attack_ratio*100:.1f}%)")
+            
+            # Stratified sampling to preserve ratio
+            normal_idx = np.where(y == 0)[0]
+            attack_idx = np.where(y == 1)[0]
+            
+            # Calculate samples per class based on original ratio
+            target_normal = int(max_samples * normal_ratio)
+            target_attack = int(max_samples * attack_ratio)
+            
+            # Adjust if we don't have enough samples
+            target_normal = min(target_normal, len(normal_idx))
+            target_attack = min(target_attack, len(attack_idx))
+            
+            # Sample from each class
+            normal_idx = np.random.choice(normal_idx, target_normal, replace=False)
+            attack_idx = np.random.choice(attack_idx, target_attack, replace=False)
+            
+            # Combine and shuffle
+            selected_idx = np.concatenate([normal_idx, attack_idx])
+            np.random.shuffle(selected_idx)
+            
+            X = X.iloc[selected_idx]
+            y = y.iloc[selected_idx] if hasattr(y, 'iloc') else y[selected_idx]
+            
+            final_normal = (y == 0).sum()
+            final_attack = (y == 1).sum()
+            final_total = len(y)
+            
+            print(f"       Sampled distribution:")
+            print(f"       Normal: {final_normal:,} ({final_normal/final_total*100:.1f}%)")
+            print(f"       Attack: {final_attack:,} ({final_attack/final_total*100:.1f}%)")
+            print(f"       Total:  {final_total:,} samples")
+            print(f"       ⚠️  CLASS IMBALANCE PRESERVED - use weighted loss for training!")
 
     # ===== HANDLE MISSING VALUES (before encoding) =====
     # Replace inf with NaN
@@ -122,6 +173,40 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     dump(preproc, f"{out_dir}/preprocessor.joblib")
     
+    # === FEATURE SPLIT FOR MOE ===
+    # Determine dataset name from out_dir
+    out_dir_str = str(out_dir)  # Convert Path to string
+    dataset_name = 'CICIDS' if 'cicids' in out_dir_str.lower() else 'UNSW'
+    
+    # Get feature split configuration
+    try:
+        from src.data.feature_config import get_feature_split
+        
+        feature_split = get_feature_split(dataset_name, total_features=X_trans.shape[1])
+        
+        # Split features into tabular and temporal
+        X_tabular = X_trans[:, feature_split['tabular_indices']]
+        X_temporal = X_trans[:, feature_split['temporal_indices']]
+        
+        print(f"[INFO] Feature split for MoE:")
+        print(f"       Tabular features: {X_tabular.shape[1]}")
+        print(f"       Temporal features: {X_temporal.shape[1]}")
+        
+        # Save split features
+        np.save(f"{out_dir}/X_tabular.npy", X_tabular)
+        np.save(f"{out_dir}/X_temporal.npy", X_temporal)
+        
+        feature_split_metadata = {
+            'tabular_indices': feature_split['tabular_indices'],
+            'temporal_indices': feature_split['temporal_indices'],
+            'n_tabular': feature_split['n_tabular'],
+            'n_temporal': feature_split['n_temporal'],
+            'temporal_names': feature_split.get('temporal_names', [])
+        }
+    except Exception as e:
+        print(f"[WARNING] Could not split features for MoE: {e}")
+        feature_split_metadata = {}
+    
     # Save metadata about the preprocessing
     metadata = {
         "n_samples": len(X_trans),
@@ -131,7 +216,8 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
         "n_numeric_original": len(schema.num_cols),
         "categorical_columns": list(schema.cat_cols),
         "numeric_columns": list(schema.num_cols),
-        "label_encoding": {"0": "Normal/Benign", "1": "Attack"}
+        "label_encoding": {"0": "Normal/Benign", "1": "Attack"},
+        "feature_split": feature_split_metadata
     }
     
     import json
@@ -156,8 +242,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--params", type=str, default="params.yaml")
     parser.add_argument("--out", type=str, default="data/processed")
-    parser.add_argument("--mini", action="store_true", help="Create mini dataset for faster experimentation")
-    parser.add_argument("--max-samples", type=int, default=50000, help="Max samples for mini dataset")
+    parser.add_argument("--mini", action="store_true", help="Create mini balanced dataset for faster experimentation")
+    parser.add_argument("--imbalanced", action="store_true", help="Preserve natural class imbalance (for production training)")
+    parser.add_argument("--max-samples", type=int, default=50000, help="Max samples for dataset")
     args = parser.parse_args()
 
     # Charger config
@@ -179,16 +266,20 @@ if __name__ == "__main__":
     else:
         max_rows = int(max_rows)
 
-    # Use --mini flag for balanced mini dataset
+    # Determine sampling strategy
     if args.mini:
         max_rows = args.max_samples
-        print(f"[INFO] Creating MINI dataset with max {max_rows} balanced samples")
         balance = True
+        print(f"[INFO] Creating MINI BALANCED dataset with {max_rows} samples (50/50)")
+    elif args.imbalanced:
+        max_rows = args.max_samples
+        balance = False
+        print(f"[INFO] Creating LARGE IMBALANCED dataset with {max_rows} samples (preserving natural distribution)")
     else:
         balance = False
+        print(f"[INFO] Processing full dataset")
 
     if max_rows:
-        # Don't use head() - let preprocess() do balanced sampling
-        print(f"[INFO] Will sample {max_rows} rows with balance={balance}")
+        print(f"[INFO] Target samples: {max_rows:,}")
 
     preprocess(df, schema, out_dir, max_samples=max_rows, balance_classes=balance)
