@@ -154,33 +154,82 @@ def main(params_path="params.yaml", stage="pretrain"):
     with open(params_path, "r") as f:
         params = yaml.safe_load(f)
 
+    # Auto-detect dataset from params
     dataset = params["data"]["dataset"].lower()
     dataset_dir = f"data/processed/{dataset}"
+    
+    # Auto-generate paths based on dataset
+    pretrained_path = f"models/weights/{dataset}_pretrained.pt"
+    finetuned_path = f"models/weights/{dataset}_finetuned.pt"
+    
+    print(f"\n{'='*60}")
+    print(f"Dataset: {dataset.upper()}")
+    print(f"Stage: {stage.upper()}")
+    print(f"Data directory: {dataset_dir}")
+    print(f"{'='*60}\n")
 
     # Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and params["train"].get("use_cuda", True) else "cpu")
+    print(f"[INFO] Using device: {device}")
 
-    # Create Dataloaders
-    train_dl, val_dl = load_dataset(dataset_dir, batch_size=256)
+    # Create Dataloaders with stratified split
+    train_dl, val_dl = load_dataset(
+        dataset_dir, 
+        batch_size=params["train"]["batch_size"],
+        test_size=0.2,
+        random_state=42
+    )
 
-    # Build config for model
+    # Load metadata to get feature counts
+    import joblib
+    preprocessor_path = f"{dataset_dir}/preprocessor.joblib"
+    
+    if os.path.exists(preprocessor_path):
+        preprocessor = joblib.load(preprocessor_path)
+        
+        # Get the actual number of features after transformation
+        # The preprocessor outputs all features (onehot-encoded cats + scaled nums)
+        sample_X = train_dl.dataset.dataset.tensors[0][:1]  # Get one sample
+        n_features = sample_X.shape[1]
+        
+        print(f"[INFO] Detected {n_features} features after preprocessing")
+        
+        # For TabTransformer: all features are treated as numeric after OneHotEncoding
+        n_num = n_features
+        cat_cardinalities = []
+    else:
+        # Fallback if no preprocessor found
+        sample_X = train_dl.dataset.dataset.tensors[0][:1]
+        n_num = sample_X.shape[1]
+        cat_cardinalities = []
+        print(f"[WARNING] No preprocessor found, using default feature count: {n_num}")
+
+    # Build config for model from params
     cfg = TabularExpertConfig(
-        n_num=train_dl.dataset[0][0].numel(),
-        cat_cardinalities=[],
-        d_model=64,
-        n_heads=4,
-        n_layers=2,
-        clf_hidden=128,
-        n_classes=2,
-        dropout=0.1
+        n_num=n_num,
+        cat_cardinalities=cat_cardinalities,  # Empty since OneHot already applied
+        d_model=params["train"].get("d_model", 64),
+        n_heads=params["train"].get("n_heads", 4),
+        n_layers=params["train"].get("n_layers", 2),
+        clf_hidden=params["train"].get("clf_hidden", 128),
+        n_classes=params["train"]["n_classes"],
+        dropout=params["train"].get("dropout", 0.1),
+        mask_ratio=params["train"].get("mask_ratio", 0.15)
     )
 
     model = TabularExpert(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[INFO] Model parameters: {total_params:,} (trainable: {trainable_params:,})")
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=params["train"]["learning_rate"])
     criterion = nn.CrossEntropyLoss()
 
     # Start MLflow experiment
-    mlflow.set_experiment("cyber_anomaly_detection")
+    experiment_name = f"tabular_expert_{dataset}"
+    mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=f"{stage}_{dataset}"):
 
@@ -190,26 +239,39 @@ def main(params_path="params.yaml", stage="pretrain"):
             "d_model": cfg.d_model,
             "n_heads": cfg.n_heads,
             "n_layers": cfg.n_layers,
-            "lr": 1e-4,
+            "n_features": cfg.n_num,
+            "batch_size": params["train"]["batch_size"],
+            "lr": params["train"]["learning_rate"],
+            "mask_ratio": cfg.mask_ratio,
         })
 
         if stage == "pretrain":
+            epochs = params["train"]["epochs_pretrain"]
+            print(f"\n[INFO] Starting PRETRAIN stage for {epochs} epoch(s)...")
+            
             loss = train_self_supervised(model, train_dl, optimizer, device)
             mlflow.log_metric("pretrain_loss", loss)
 
             # Save pre-trained weights
             Path("models/weights").mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), f"models/weights/{dataset}_pretrained.pt")
-            mlflow.log_artifact(f"models/weights/{dataset}_pretrained.pt")
+            torch.save(model.state_dict(), pretrained_path)
+            mlflow.log_artifact(pretrained_path)
+            
+            print(f"\n✅ Pretrain complete! Saved to: {pretrained_path}")
 
         elif stage == "finetune":
             # Load pretrained weights if available
-            pretrained_path = f"models/weights/{dataset}_pretrained.pt"
             if os.path.exists(pretrained_path):
-                model.load_state_dict(torch.load(pretrained_path))
-                print(f"Loaded pretrained weights from {pretrained_path}")
+                model.load_state_dict(torch.load(pretrained_path, map_location=device))
+                print(f"[INFO] Loaded pretrained weights from {pretrained_path}")
+            else:
+                print(f"[WARNING] No pretrained weights found at {pretrained_path}")
+                print(f"          Training from scratch...")
 
-            for epoch in range(5):
+            epochs = params["train"]["epochs_finetune"]
+            print(f"\n[INFO] Starting FINETUNE stage for {epochs} epoch(s)...")
+            
+            for epoch in range(epochs):
                 train_loss, train_acc = train_supervised(model, train_dl, optimizer, criterion, device)
                 val_loss, val_acc = evaluate(model, val_dl, criterion, device)
 
@@ -220,11 +282,14 @@ def main(params_path="params.yaml", stage="pretrain"):
                     "val_acc": val_acc
                 }, step=epoch)
 
-                print(f"[Epoch {epoch+1}] Train Acc={train_acc:.3f} | Val Acc={val_acc:.3f}")
+                print(f"[Epoch {epoch+1}/{epochs}] Train Acc={train_acc:.3f} | Val Acc={val_acc:.3f}")
 
             Path("models/weights").mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), f"models/weights/{dataset}_finetuned.pt")
-            mlflow.log_artifact(f"models/weights/{dataset}_finetuned.pt")
+            torch.save(model.state_dict(), finetuned_path)
+            mlflow.log_artifact(finetuned_path)
+            
+            print(f"\n✅ Finetune complete! Saved to: {finetuned_path}")
+            print(f"   Final performance: Train={train_acc:.3f} | Val={val_acc:.3f}")
 
         else:
             raise ValueError("Stage must be 'pretrain' or 'finetune'")

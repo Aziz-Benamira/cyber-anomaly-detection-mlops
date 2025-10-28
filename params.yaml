@@ -1,5 +1,6 @@
 data:
-  dataset: "CICIDS"          # or "UNSW"
+  dataset: "CICIDS"          # Choose: "CICIDS" or "UNSW"
+  # Paths auto-generated based on dataset choice
 
 preprocess:
   max_rows: null             # None → use full dataset
@@ -7,22 +8,23 @@ preprocess:
   # Example: python -m src.data.preprocess --mini --max-samples 50000
 
 train:
-  # Path to processed dataset
-  dataset_dir: "data/processed/cicids"
-
-  # Model saving paths
-  pretrained_path: "models/weights/cicids_pretrained.pt"
-  finetuned_path: "models/weights/cicids_finetuned.pt"
-
   # Training hyperparameters
   batch_size: 256
   n_classes: 2
-  epochs_pretrain: 1          # already done
-  epochs_finetune: 10         # adjust depending on GPU
-  learning_rate: 1e-4
+  epochs_pretrain: 1          # self-supervised masked feature modeling
+  epochs_finetune: 10         # supervised classification
+  learning_rate: 0.0001       # 1e-4 written as decimal
+
+  # Model architecture (auto-adjusted per dataset)
+  d_model: 128                # embedding dimension
+  n_heads: 8                  # attention heads
+  n_layers: 4                 # transformer layers
+  clf_hidden: 256             # classification hidden size
+  dropout: 0.1
+  mask_ratio: 0.15            # MFM masking ratio
 
   # Device config
   use_cuda: true
 
   # Logging
-  experiment_name: "tabular_expert_finetune"
+  log_every_n_steps: 50

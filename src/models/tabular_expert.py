@@ -1,13 +1,25 @@
 """
-Tabular Expert (Schema-Agnostic) — Feature Tokenizer + Transformer backbone
-+ Masked-Feature pretraining head + Classification head.
+FT-Transformer (Feature Tokenizer Transformer) for Tabular Data
 
-Idée clé:
-- Chaque feature (colonne) devient un "token" = embedding(nom_colonne) + encodage(valeur)
-- On passe la séquence de tokens dans un Transformer (permutation-invariant si on shufflait)
-- On peut pré-entraîner en self-supervised (masked feature modeling)
-- Puis fine-tuner une tête de classification (attack / normal)
+Based on: "Revisiting Deep Learning Models for Tabular Data" (Gorishniy et al., 2021)
 
+Key Innovation:
+- ALL features (numerical AND categorical) are tokenized into embeddings
+- Self-attention learns interactions between ALL feature types
+- [CLS] token aggregates global context for final prediction
+
+Architecture Flow:
+  1. Numerical features: Linear projection per feature (b_j + x_j * W_j)
+  2. Categorical features: Learned embeddings
+  3. Concatenate all feature tokens
+  4. Prepend [CLS] token
+  5. Transformer encoder processes full sequence
+  6. [CLS] embedding → MLP head for prediction
+
+This is superior to TabTransformer because:
+- TabTransformer: Only categoricals get attention, numericals bypass it
+- FT-Transformer: All features participate in self-attention
+- Critical for CICIDS (100% numerical) and UNSW (mostly numerical)
 """
 
 from dataclasses import dataclass
@@ -23,143 +35,193 @@ import torch.nn.functional as F
 # ------------------------------
 @dataclass
 class TabularExpertConfig:
-    d_model: int = 64           # dimension des embeddings / modèle
-    n_heads: int = 4
-    n_layers: int = 3
+    d_model: int = 64           # embedding dimension for all features
+    n_heads: int = 4            # multi-head attention heads
+    n_layers: int = 3           # transformer encoder layers
     dropout: float = 0.1
 
     # classification
     clf_hidden: int = 64
-    n_classes: int = 2          # binaire par défaut (normal vs attack)
+    n_classes: int = 2          # binary (normal vs attack)
 
-    # masked-feature
-    mask_ratio: float = 0.2     # ratio de features à masquer par échantillon
+    # masked-feature modeling (self-supervised pretraining)
+    mask_ratio: float = 0.2     # ratio of features to mask per sample
 
-    # pooling
-    use_cls_token: bool = True  # True: utilise un token [CLS]; False: mean pooling
+    # FT-Transformer always uses [CLS] token
+    use_cls_token: bool = True  # Always True for FT-Transformer
 
-    # initialisation des emb. noms de colonnes (optionnel: via LLM/word2vec)
-    init_feature_name_embed: Optional[torch.Tensor] = None  # [n_features, d_model]
-
-    # dimensions/features
-    n_num: int = 0              # nb de colonnes numériques
-    cat_cardinalities: List[int] = None  # liste des cardinalités pour chaque colonne catégorielle
+    # feature dimensions
+    n_num: int = 0              # number of numerical features
+    cat_cardinalities: List[int] = None  # cardinalities for categorical features
+    
+    # FT-Transformer specific
+    numerical_embedding_bias: bool = True  # Use bias in numerical tokenization
 
 
 # ------------------------------
-# Tokenizer
+# FT-Transformer Feature Tokenizer
 # ------------------------------
-class FeatureTokenizer(nn.Module):
+class FTFeatureTokenizer(nn.Module):
     """
-    Transforme X_num et X_cat en une séquence de tokens:
-      token_i = Proj( Emb(feature_name_i)  ||  ValueEncoder(val_i) )
-
-    - Les features numériques utilisent un petit MLP linéaire (1->d_model)
-    - Les features catégorielles utilisent un Embedding(cardinality, d_model)
-    - Embedding des noms de colonnes (feature_emb) appris (ou initialisé)
+    FT-Transformer tokenization: ALL features → embeddings
+    
+    Numerical features: Each feature x_j is projected via:
+        token_j = b_j + x_j * W_j
+        where W_j: (d_model,), b_j: (d_model,)
+    
+    Categorical features: Standard embedding lookup
+    
+    Returns:
+        [CLS] token + all feature tokens: (B, 1 + n_features, d_model)
     """
     def __init__(self, n_num: int, cat_cardinalities: List[int], d_model: int,
-                 init_feature_name_embed: Optional[torch.Tensor] = None):
+                 use_bias: bool = True):
         super().__init__()
         self.n_num = n_num
         self.n_cat = len(cat_cardinalities) if cat_cardinalities else 0
         self.n_features = self.n_num + self.n_cat
         self.d_model = d_model
+        self.use_bias = use_bias
 
-        # Embedding pour le nom des features (taille = n_features)
-        self.feature_emb = nn.Embedding(self.n_features, d_model)
-        if init_feature_name_embed is not None:
-            if init_feature_name_embed.shape != (self.n_features, d_model):
-                raise ValueError("init_feature_name_embed must have shape [n_features, d_model]")
-            with torch.no_grad():
-                self.feature_emb.weight.copy_(init_feature_name_embed)
+        # === NUMERICAL FEATURE TOKENIZATION ===
+        # Per-feature linear projection: token_j = b_j + x_j * W_j
+        if self.n_num > 0:
+            # Weight matrix: (n_num, d_model) - each row is W_j for feature j
+            self.num_weight = nn.Parameter(torch.randn(n_num, d_model))
+            if use_bias:
+                # Bias vector: (n_num, d_model) - each row is b_j for feature j
+                self.num_bias = nn.Parameter(torch.randn(n_num, d_model))
+            else:
+                self.register_parameter('num_bias', None)
+            
+            # Initialize weights
+            nn.init.xavier_uniform_(self.num_weight)
+            if use_bias:
+                nn.init.zeros_(self.num_bias)
 
-        # Encodeur de valeur numérique
-        self.num_encoder = nn.Linear(1, d_model)
+        # === CATEGORICAL FEATURE TOKENIZATION ===
+        # Standard embedding lookup per categorical feature
+        if self.n_cat > 0:
+            self.cat_embeddings = nn.ModuleList([
+                nn.Embedding(cardinality, d_model) 
+                for cardinality in cat_cardinalities
+            ])
 
-        # Embeddings pour valeurs catégorielles
-        self.cat_embs = nn.ModuleList(
-            [nn.Embedding(card, d_model) for card in (cat_cardinalities or [])]
-        )
-
-        # Proj pour fusionner [name_emb | value_emb] -> d_model
-        self.proj = nn.Linear(2 * d_model, d_model)
-
-        # Token spécial [CLS] (optionnel)
+        # === [CLS] TOKEN ===
+        # Learnable token that aggregates global context
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        nn.init.normal_(self.cls_token, std=0.02)
 
-        # Token valeur masquée (pour masked-feature)
-        self.mask_value_token = nn.Parameter(torch.randn(1, 1, d_model))
+        # === [MASK] TOKEN (for masked feature modeling) ===
+        self.mask_token = nn.Parameter(torch.randn(1, 1, d_model))
+        nn.init.normal_(self.mask_token, std=0.02)
 
-    def forward(self, X_num: Optional[torch.Tensor], X_cat: Optional[torch.Tensor],
-                add_cls: bool = True) -> torch.Tensor:
+    def tokenize_numerical(self, x_num: torch.Tensor) -> torch.Tensor:
         """
-        X_num: [B, n_num] (float)
-        X_cat: [B, n_cat] (long)
-        return: tokens [B, (n_features + cls), d_model]
+        Tokenize numerical features using FT-Transformer projection
+        
+        x_num: (B, n_num)
+        Returns: (B, n_num, d_model)
+        
+        For each feature j: token_j = b_j + x_j * W_j
+        Implemented efficiently using broadcasting:
+          x_num: (B, n_num, 1)
+          W: (n_num, d_model)
+          Result: (B, n_num, d_model)
         """
-        B = X_num.size(0) if X_num is not None else X_cat.size(0)
-        tokens = []
-
-        # Numériques
-        if X_num is not None and self.n_num > 0:
-            for i in range(self.n_num):
-                # nom de feature
-                col_idx = torch.tensor(i, device=X_num.device)
-                col_emb = self.feature_emb(col_idx)             # [d_model]
-                col_emb = col_emb.unsqueeze(0).expand(B, -1)    # [B, d_model]
-
-                # valeur encodée
-                val_emb = self.num_encoder(X_num[:, i].unsqueeze(-1))  # [B, d_model]
-
-                fused = torch.cat([col_emb, val_emb], dim=-1)   # [B, 2*d_model]
-                fused = self.proj(fused)                        # [B, d_model]
-                tokens.append(fused)
-
-        # Catégorielles
-        if X_cat is not None and self.n_cat > 0:
-            for j in range(self.n_cat):
-                feat_idx = self.n_num + j
-                col_idx = torch.tensor(feat_idx, device=X_cat.device)
-                col_emb = self.feature_emb(col_idx).unsqueeze(0).expand(B, -1)  # [B, d_model]
-
-                val_emb = self.cat_embs[j](X_cat[:, j])  # [B, d_model]
-                fused = torch.cat([col_emb, val_emb], dim=-1)
-                fused = self.proj(fused)
-                tokens.append(fused)
-
-        if not tokens:
-            raise ValueError("No features provided to tokenizer.")
-
-        tokens = torch.stack(tokens, dim=1)  # [B, n_features, d_model]
-
-        if add_cls:
-            cls = self.cls_token.expand(B, 1, self.d_model)  # [B,1,d_model]
-            tokens = torch.cat([cls, tokens], dim=1)         # [B, 1+n_features, d_model]
-
+        # x_num: (B, n_num) -> (B, n_num, 1)
+        x_expanded = x_num.unsqueeze(-1)  # (B, n_num, 1)
+        
+        # Broadcast multiplication: (B, n_num, 1) * (n_num, d_model) -> (B, n_num, d_model)
+        tokens = x_expanded * self.num_weight.unsqueeze(0)  # (B, n_num, d_model)
+        
+        if self.use_bias:
+            tokens = tokens + self.num_bias.unsqueeze(0)  # (B, n_num, d_model)
+        
         return tokens
 
-    def apply_value_mask(self, tokens: torch.Tensor, mask_idx: torch.Tensor) -> torch.Tensor:
+    def tokenize_categorical(self, x_cat: torch.Tensor) -> torch.Tensor:
         """
-        Remplace la "partie valeur" des tokens par un token [MASK] simulé.
-        Ici, comme on a déjà fusionné name+value via self.proj, on simule en remplaçant
-        le token entier par mask_value_token aux positions masquées (hors CLS).
-        tokens: [B, 1+n_features, d_model]
-        mask_idx: [B, n_features] booleen — True si on masque cette feature
+        Tokenize categorical features using embeddings
+        
+        x_cat: (B, n_cat) - long tensor with category indices
+        Returns: (B, n_cat, d_model)
         """
-        if tokens.size(1) != mask_idx.size(1) + 1:
-            raise ValueError("mask_idx should refer to feature positions excluding CLS.")
-        B = tokens.size(0)
-        masked = tokens.clone()
-        mask_token = self.mask_value_token.expand(B, 1, self.d_model)  # [B,1,D]
-        # positions features = 1..n_features (0 = CLS)
-        for b in range(B):
-            # indices (dans tokens) à remplacer (décalage +1 pour ignorer CLS)
-            idxs = torch.nonzero(mask_idx[b], as_tuple=False).squeeze(-1) + 1
-            if idxs.numel() > 0:
-                masked[b, idxs] = mask_token[b, 0, :]
+        tokens = []
+        for i in range(self.n_cat):
+            token = self.cat_embeddings[i](x_cat[:, i])  # (B, d_model)
+            tokens.append(token)
+        
+        if tokens:
+            return torch.stack(tokens, dim=1)  # (B, n_cat, d_model)
+        else:
+            # Return empty tensor if no categorical features
+            return torch.empty(x_cat.size(0), 0, self.d_model, device=x_cat.device)
 
-        return masked
+    def forward(self, x_num: Optional[torch.Tensor] = None, 
+                x_cat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Tokenize all features and prepend [CLS] token
+        
+        x_num: (B, n_num) or None
+        x_cat: (B, n_cat) or None
+        
+        Returns: (B, 1 + n_features, d_model)
+                 [CLS, num_feat_1, ..., num_feat_n, cat_feat_1, ..., cat_feat_m]
+        """
+        if x_num is None and x_cat is None:
+            raise ValueError("At least one of x_num or x_cat must be provided")
+        
+        # Determine batch size
+        B = x_num.size(0) if x_num is not None else x_cat.size(0)
+        
+        feature_tokens = []
+        
+        # Tokenize numerical features
+        if x_num is not None and self.n_num > 0:
+            num_tokens = self.tokenize_numerical(x_num)  # (B, n_num, d_model)
+            feature_tokens.append(num_tokens)
+        
+        # Tokenize categorical features
+        if x_cat is not None and self.n_cat > 0:
+            cat_tokens = self.tokenize_categorical(x_cat)  # (B, n_cat, d_model)
+            feature_tokens.append(cat_tokens)
+        
+        # Concatenate all feature tokens
+        if feature_tokens:
+            all_tokens = torch.cat(feature_tokens, dim=1)  # (B, n_features, d_model)
+        else:
+            raise ValueError("No features to tokenize")
+        
+        # Prepend [CLS] token
+        cls = self.cls_token.expand(B, -1, -1)  # (B, 1, d_model)
+        tokens = torch.cat([cls, all_tokens], dim=1)  # (B, 1 + n_features, d_model)
+        
+        return tokens
+
+    def apply_mask(self, tokens: torch.Tensor, mask_indices: torch.Tensor) -> torch.Tensor:
+        """
+        Replace masked feature tokens with [MASK] token
+        
+        tokens: (B, 1 + n_features, d_model) - includes [CLS] at position 0
+        mask_indices: (B, n_features) - boolean mask (True = masked)
+        
+        Returns: (B, 1 + n_features, d_model) with masked features replaced
+        """
+        B = tokens.size(0)
+        masked_tokens = tokens.clone()
+        
+        # Expand mask token for batch
+        mask_token = self.mask_token.expand(B, 1, self.d_model)  # (B, 1, d_model)
+        
+        # Apply mask to feature positions (skip [CLS] at index 0)
+        for b in range(B):
+            # Get indices of masked features (add 1 to skip [CLS])
+            masked_positions = torch.where(mask_indices[b])[0] + 1
+            if len(masked_positions) > 0:
+                masked_tokens[b, masked_positions] = mask_token[b, 0]
+        
+        return masked_tokens
 
 
 # ------------------------------
@@ -275,15 +337,21 @@ class ClassificationHead(nn.Module):
 
 
 # ------------------------------
-# Expert complet
+# FT-Transformer Expert (Complete Pipeline)
 # ------------------------------
 class TabularExpert(nn.Module):
     """
-    Pipeline complet "expert tabulaire":
-      - Tokenizer (nom + valeur)
-      - Backbone Transformer
-      - Tête masked-feature (pré-entrainement)
-      - Tête classification (fine-tuning)
+    FT-Transformer Expert for Tabular Data
+    
+    Architecture:
+      1. FTFeatureTokenizer: ALL features → embeddings + [CLS]
+      2. TransformerBackbone: Self-attention over all feature tokens
+      3. MaskedFeatureHead: Self-supervised pretraining
+      4. ClassificationHead: Supervised finetuning (uses [CLS] token only)
+    
+    Key Advantage over TabTransformer:
+      - All features (numerical + categorical) participate in self-attention
+      - Critical for datasets like CICIDS (100% numerical) and UNSW (mostly numerical)
     """
     def __init__(self, cfg: TabularExpertConfig):
         super().__init__()
@@ -291,13 +359,15 @@ class TabularExpert(nn.Module):
         n_num = cfg.n_num
         cat_cards = cfg.cat_cardinalities or []
 
-        self.tokenizer = FeatureTokenizer(
+        # FT-Transformer tokenizer (tokenizes ALL features)
+        self.tokenizer = FTFeatureTokenizer(
             n_num=n_num,
             cat_cardinalities=cat_cards,
             d_model=cfg.d_model,
-            init_feature_name_embed=cfg.init_feature_name_embed
+            use_bias=cfg.numerical_embedding_bias
         )
 
+        # Transformer backbone (processes full sequence)
         self.backbone = TransformerBackbone(
             d_model=cfg.d_model,
             n_heads=cfg.n_heads,
@@ -305,32 +375,35 @@ class TabularExpert(nn.Module):
             dropout=cfg.dropout
         )
 
+        # Masked feature modeling head (pretraining)
         self.mfm_head = MaskedFeatureHead(
             d_model=cfg.d_model,
             n_num=n_num,
             cat_cardinalities=cat_cards
         )
 
+        # Classification head (finetuning)
         self.clf_head = ClassificationHead(
             d_model=cfg.d_model,
             hidden=cfg.clf_hidden,
             n_classes=cfg.n_classes
         )
 
-    def _pool(self, h_tokens: torch.Tensor) -> torch.Tensor:
+    def _extract_cls_token(self, h_tokens: torch.Tensor) -> torch.Tensor:
         """
-        h_tokens: [B, 1+n_features, D]
+        Extract [CLS] token embedding from transformer output
+        
+        h_tokens: (B, 1 + n_features, d_model)
+        Returns: (B, d_model) - just the [CLS] embedding at position 0
         """
-        if self.cfg.use_cls_token:
-            # Token 0 = CLS
-            return h_tokens[:, 0, :]
-        else:
-            # Mean pooling (on peut exclure CLS si présent)
-            return h_tokens.mean(dim=1)
+        return h_tokens[:, 0, :]  # [CLS] is always at index 0
 
     def _sample_mask(self, B: int, n_features: int, device) -> torch.Tensor:
         """
-        Retourne un mask booléen [B, n_features] avec ~mask_ratio True.
+        Sample random mask for masked feature modeling
+        
+        Returns: (B, n_features) boolean tensor
+                 True = masked, False = visible
         """
         k = max(1, int(self.cfg.mask_ratio * n_features))
         mask = torch.zeros(B, n_features, dtype=torch.bool, device=device)
@@ -339,45 +412,79 @@ class TabularExpert(nn.Module):
             mask[b, idx] = True
         return mask
 
-    # ---- Pré-entrainement: masked-feature modeling ----
+    # ---- Self-Supervised Pretraining: Masked Feature Modeling ----
     def forward_mfm(self,
-                    X_num: Optional[torch.Tensor],
-                    X_cat: Optional[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
+                    X_num: Optional[torch.Tensor] = None,
+                    X_cat: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        X_num: [B, n_num] (déjà normalisé)
-        X_cat: [B, n_cat]
-
-        Retourne (loss, logs)
+        Masked Feature Modeling (self-supervised pretraining)
+        
+        Process:
+          1. Tokenize all features
+          2. Randomly mask some feature tokens
+          3. Transformer processes masked sequence
+          4. Predict masked feature values
+        
+        Args:
+            X_num: (B, n_num) normalized numerical features
+            X_cat: (B, n_cat) categorical feature indices
+        
+        Returns:
+            (loss, logs) - reconstruction loss and metrics
         """
-        tokens = self.tokenizer(X_num, X_cat, add_cls=self.cfg.use_cls_token)  # [B, 1+n_features, D]
+        # Tokenize all features + prepend [CLS]
+        tokens = self.tokenizer(x_num=X_num, x_cat=X_cat)  # (B, 1 + n_features, d_model)
         B, L, D = tokens.shape
-        n_features = L - 1  # hors CLS
+        n_features = L - 1  # Exclude [CLS]
 
-        # mask indices (sur features seulement)
-        mask_idx = self._sample_mask(B, n_features, tokens.device)  # [B, n_features]
-        tokens_masked = self.tokenizer.apply_value_mask(tokens, mask_idx)  # [B, 1+n_features, D]
+        # Sample random mask over features (not [CLS])
+        mask_idx = self._sample_mask(B, n_features, tokens.device)  # (B, n_features)
+        
+        # Apply mask to tokens
+        tokens_masked = self.tokenizer.apply_mask(tokens, mask_idx)  # (B, 1 + n_features, d_model)
 
-        # encode
-        h = self.backbone(tokens_masked)  # [B, 1+n_features, D]
+        # Pass through transformer
+        h = self.backbone(tokens_masked)  # (B, 1 + n_features, d_model)
 
-        # préparer cibles pour tête MFM
+        # Prepare targets for reconstruction
         y_num = X_num if X_num is not None and self.cfg.n_num > 0 else None
         y_cat = X_cat if X_cat is not None and len(self.cfg.cat_cardinalities or []) > 0 else None
 
+        # Compute reconstruction loss (only on masked features)
         loss, logs = self.mfm_head(h, mask_idx, y_num, y_cat)
         return loss, logs
 
-    # ---- Fine-tuning: classification ----
+    # ---- Supervised Finetuning: Classification ----
     def forward_classify(self,
-                         X_num: Optional[torch.Tensor],
-                         X_cat: Optional[torch.Tensor]) -> torch.Tensor:
+                         X_num: Optional[torch.Tensor] = None,
+                         X_cat: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Retourne des logits [B, n_classes]
+        Classification forward pass (supervised finetuning)
+        
+        Process:
+          1. Tokenize all features
+          2. Transformer processes full sequence
+          3. Extract [CLS] token embedding
+          4. MLP head predicts class logits
+        
+        Args:
+            X_num: (B, n_num) normalized numerical features
+            X_cat: (B, n_cat) categorical feature indices
+        
+        Returns:
+            logits: (B, n_classes) - class prediction logits
         """
-        tokens = self.tokenizer(X_num, X_cat, add_cls=self.cfg.use_cls_token)
-        h = self.backbone(tokens)     # [B, L, D]
-        pooled = self._pool(h)        # [B, D]
-        logits = self.clf_head(pooled)
+        # Tokenize all features + prepend [CLS]
+        tokens = self.tokenizer(x_num=X_num, x_cat=X_cat)  # (B, 1 + n_features, d_model)
+        
+        # Pass through transformer
+        h = self.backbone(tokens)  # (B, 1 + n_features, d_model)
+        
+        # Extract [CLS] token (aggregates global context)
+        cls_embedding = self._extract_cls_token(h)  # (B, d_model)
+        
+        # Classification head
+        logits = self.clf_head(cls_embedding)  # (B, n_classes)
         return logits
 
 

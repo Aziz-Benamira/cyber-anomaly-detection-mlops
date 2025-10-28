@@ -97,8 +97,22 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
         print(f"[INFO] Balanced sampling: {len(selected_idx)} samples")
         print(f"       Class 0: {(y==0).sum()}, Class 1: {(y==1).sum()}")
 
-    X = X.replace([np.inf, -np.inf], np.nan)  # remplacer Inf par NaN
-    X = X.fillna(X.median()) 
+    # ===== HANDLE MISSING VALUES (before encoding) =====
+    # Replace inf with NaN
+    X = X.replace([np.inf, -np.inf], np.nan)
+    
+    # Fill NaN: numeric columns with median, categorical with mode
+    for col in schema.num_cols:
+        if col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')  # Force numeric
+            if X[col].isna().any():
+                X[col] = X[col].fillna(X[col].median())
+    
+    for col in schema.cat_cols:
+        if col in X.columns:
+            if X[col].isna().any():
+                mode_val = X[col].mode()[0] if not X[col].mode().empty else 'unknown'
+                X[col] = X[col].fillna(mode_val) 
     
     # Encoder
     preproc = build_preprocessor(schema.cat_cols, schema.num_cols)
@@ -107,6 +121,22 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
     # Sauvegarder objets
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     dump(preproc, f"{out_dir}/preprocessor.joblib")
+    
+    # Save metadata about the preprocessing
+    metadata = {
+        "n_samples": len(X_trans),
+        "n_features_original": len(schema.all_features),
+        "n_features_after_encoding": X_trans.shape[1],
+        "n_categorical_original": len(schema.cat_cols),
+        "n_numeric_original": len(schema.num_cols),
+        "categorical_columns": list(schema.cat_cols),
+        "numeric_columns": list(schema.num_cols),
+        "label_encoding": {"0": "Normal/Benign", "1": "Attack"}
+    }
+    
+    import json
+    with open(f"{out_dir}/metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
 
     # Sauver en numpy (make sure y is numpy array)
     np.save(f"{out_dir}/X.npy", X_trans)
@@ -116,6 +146,8 @@ def preprocess(df: pd.DataFrame, schema, out_dir: str, max_samples: int = None, 
 
     print(f"[INFO] Saved processed data to {out_dir}")
     print(f"       X shape = {X_trans.shape}, y shape = {None if y is None else y_array.shape}")
+    print(f"       Features: {len(schema.num_cols)} numeric + {len(schema.cat_cols)} categorical")
+    print(f"       After encoding: {X_trans.shape[1]} features (OneHot expanded)")
 
 
 if __name__ == "__main__":
