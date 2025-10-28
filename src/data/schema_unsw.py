@@ -6,9 +6,9 @@ class UNSWSchema:
     # Pas de vraie timestamp, on utilisera 'dur' comme feature num
     time_col: str = None  
 
-    # Colonnes catégorielles
+    # Colonnes catégorielles (REMOVED attack_cat - it's data leakage!)
     cat_cols: List[str] = (
-        "proto", "service", "state", "attack_cat"
+        "proto", "service", "state"
     )
 
     # Colonnes numériques (toutes sauf id et label)

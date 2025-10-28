@@ -1,5 +1,5 @@
 data:
-  dataset: "CICIDS"          # Choose: "CICIDS" or "UNSW"
+  dataset: "UNSW"            # Choose: "CICIDS" or "UNSW"
   # Paths auto-generated based on dataset choice
 
 preprocess:
