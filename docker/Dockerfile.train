@@ -1,0 +1,69 @@
+# ============================================================================
+# Training Container - GPU Support for Model Training
+# ============================================================================
+# Build: docker build -t moe-train -f docker/Dockerfile.train .
+# Run:   docker run --gpus all -v $(pwd)/models:/app/models moe-train
+
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install Python 3.10
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    python3.10-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first (layer caching)
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install PyTorch with CUDA support
+RUN pip3 install --no-cache-dir \
+    torch==2.0.0+cu118 \
+    torchvision==0.15.0+cu118 \
+    --index-url https://download.pytorch.org/whl/cu118
+
+# Copy source code
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY params.yaml .
+COPY dvc.yaml .
+
+# Create directories for data and models
+RUN mkdir -p data/raw data/processed models/weights reports
+
+# Default command: Show help
+CMD ["python3", "-m", "src.models.train_moe", "--help"]
+
+# ============================================================================
+# Usage Examples:
+# ============================================================================
+# 
+# 1. Pretrain Tabular Expert:
+#    docker run --gpus all \
+#      -v $(pwd)/data:/app/data \
+#      -v $(pwd)/models:/app/models \
+#      moe-train python3 -m src.models.train_moe --stage pretrain --dataset CICIDS
+#
+# 2. Train Full MoE:
+#    docker run --gpus all \
+#      -v $(pwd)/data:/app/data \
+#      -v $(pwd)/models:/app/models \
+#      moe-train python3 -m src.models.train_moe --stage train --dataset CICIDS
+#
+# 3. Interactive mode:
+#    docker run --gpus all -it \
+#      -v $(pwd)/data:/app/data \
+#      -v $(pwd)/models:/app/models \
+#      moe-train bash
+# ============================================================================

@@ -1,5 +1,5 @@
 data:
-  dataset: UNSW
+  dataset: CICIDS
 preprocess:
   max_rows: null
 train:

@@ -1,0 +1,99 @@
+# ============================================================================
+# Docker Build Context Exclusions
+# ============================================================================
+# Reduces build time and image size by excluding unnecessary files
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data directories (large files)
+data/raw/*.csv
+data/raw/*.pcap
+data/interim/
+data/processed/
+
+# Model checkpoints (use volumes instead)
+models/weights/*.pt
+models/weights/*.pth
+
+# MLflow runs (large directory)
+mlruns/
+
+# Jupyter notebooks
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Documentation (not needed in container)
+docs/
+*.md
+README.md
+
+# Experiments
+experiments/
+
+# Reports
+reports/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Docker files themselves
+docker/
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+.cache/
+
+# ============================================================================
+# Include these files (override exclusions if needed):
+# - requirements.txt  ✓ (needed)
+# - src/              ✓ (needed)
+# - params.yaml       ✓ (needed)
+# - environment.yml   ✗ (conda, not needed for docker)
+# ============================================================================

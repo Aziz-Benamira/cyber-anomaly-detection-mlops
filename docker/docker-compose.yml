@@ -1,0 +1,109 @@
+# ============================================================================
+# Docker Compose - MoE MLOps Stack
+# ============================================================================
+# Usage:
+#   docker-compose -f docker/docker-compose.yml up          # Start all
+#   docker-compose -f docker/docker-compose.yml up api      # Start API only
+#   docker-compose -f docker/docker-compose.yml down        # Stop all
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # API Service - Model Serving
+  # ==========================================================================
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: moe-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../models:/app/models:ro        # Read-only models
+      - ../mlruns:/app/mlruns:ro        # MLflow artifacts
+      - ../data:/app/data:ro            # Data for metadata
+    environment:
+      - MLFLOW_TRACKING_URI=http://host.docker.internal:5000
+      - MODEL_NAME=moe-cybersecurity-cicids
+      - MODEL_STAGE=Production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - moe-network
+
+  # ==========================================================================
+  # Prometheus - Metrics Collection
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: moe-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+    networks:
+      - moe-network
+
+  # ==========================================================================
+  # Grafana - Visualization
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: moe-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../grafana:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - moe-network
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  moe-network:
+    driver: bridge
+
+# ============================================================================
+# Persistent Volumes
+# ============================================================================
+volumes:
+  prometheus-data:
+  grafana-data:
+
+# ============================================================================
+# Example Commands:
+# ============================================================================
+# Build and start:
+#   docker-compose -f docker/docker-compose.yml build
+#   docker-compose -f docker/docker-compose.yml up -d
+#
+# View logs:
+#   docker-compose -f docker/docker-compose.yml logs -f api
+#
+# Access services:
+#   API:        http://localhost:8000/docs
+#   Prometheus: http://localhost:9090
+#   Grafana:    http://localhost:3000 (admin/admin)
+#
+# Stop and remove:
+#   docker-compose -f docker/docker-compose.yml down
+#   docker-compose -f docker/docker-compose.yml down -v  # Also remove volumes
+# ============================================================================
