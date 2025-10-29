@@ -242,6 +242,55 @@ config.local.yaml
 params.local.yaml
 
 # ============================================
+# DOCUMENTATION (Archived/Development)
+# ============================================
+# Archive documentation (kept locally, not in repo)
+docs/archive/
+
+# PDF exports (generated from markdown)
+*.pdf
+docs/**/*.pdf
+
+# Development/interim documentation (now archived)
+COMPLETE_PROJECT_SUMMARY.md
+DATA_LEAKAGE_FIX.md
+FT_TRANSFORMER_MIGRATION.md
+FT_TRANSFORMER_RESULTS.md
+GIT_STRATEGY.md
+IMBALANCED_TRAINING_RESULTS.md
+INFERENCE_AND_MISSING_FEATURES_GUIDE.md
+MINI_DATASETS_README.md
+MODEL_TRAINING_ISSUE.md
+MOE_ARCHITECTURE_ANALYSIS.md
+MOE_ARCHITECTURE_CODE_GUIDE.md
+MoE_CROSS_DATASET_ANALYSIS.md
+MOE_RESULTS.md
+PROJECT_STATUS.md
+QUICK_START_INFERENCE.md
+QUICK_START_MONITORING.md
+SYSTEM_VISUALIZATION.md
+TRAINING_COMPLETE.md
+REPOSITORY_ORGANIZATION.md
+
+# ============================================
+# DEBUG & UTILITY SCRIPTS
+# ============================================
+# Debug scripts (kept locally for reference)
+scripts/debug/
+check_*.py
+debug_*.py
+fix_*.py
+extract_*.py
+generate_*.py
+restart_*.py
+save_*.py
+test_*_local.py
+test_*_simple.py
+
+# Batch files for local development
+*.bat
+
+# ============================================
 # KEEP THESE (Force include important files)
 # ============================================
 # Keep DVC metadata files
