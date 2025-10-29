@@ -1,0 +1,86 @@
+name: 🚀 Deploy to Production
+
+# Only run on manual trigger or version tags
+on:
+  workflow_dispatch:  # Manual trigger from GitHub UI
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+  push:
+    tags:
+      - 'v*.*.*'  # Trigger on version tags (e.g., v1.0.0)
+
+jobs:
+  deploy:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.event.inputs.environment || 'production' }}
+    
+    steps:
+      # Step 1: Get the code
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Extract version
+      - name: 🏷️ Get Version
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="latest"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION"
+      
+      # Step 3: Deploy notification (example - replace with actual deployment)
+      - name: 📢 Deployment Notification
+        run: |
+          echo "### 🚀 Deployment Started" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ github.event.inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+      
+      # Step 4: Example deployment commands (customize for your infrastructure)
+      - name: 🔧 Deploy Services
+        run: |
+          echo "Deployment commands would go here..."
+          echo "Examples:"
+          echo "  - SSH to server and pull latest images"
+          echo "  - Update docker-compose.yml with new image tags"
+          echo "  - Run: docker-compose up -d"
+          echo "  - Health check endpoints"
+          echo "  - Rollback on failure"
+      
+      # Step 5: Health check (example)
+      - name: 🏥 Health Check
+        run: |
+          echo "Health check would verify:"
+          echo "  ✓ API is responding (http://your-server:8000/health)"
+          echo "  ✓ Model is loaded"
+          echo "  ✓ Prometheus metrics available"
+          echo "  ✓ Grafana dashboard accessible"
+      
+      # Step 6: Success notification
+      - name: ✅ Deployment Success
+        run: |
+          echo "### ✅ Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The application has been deployed to **${{ github.event.inputs.environment || 'production' }}**" >> $GITHUB_STEP_SUMMARY
+
+# Note: This is a template workflow. 
+# For actual deployment, you would:
+# 1. Add secrets for server credentials (Settings → Secrets → Actions)
+# 2. Use SSH or deployment tools to connect to your server
+# 3. Pull the Docker images from GitHub Container Registry
+# 4. Update and restart your services
+# 5. Run health checks and rollback if needed
