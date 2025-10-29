@@ -1,6 +1,6 @@
 # 🔐 Cyber Anomaly Detection MLOps
 
-![Tests](https://github.com/Aziz-Benamira/cyber-anomaly-detection-mlops/actions/workflows/test.yml/badge.svg)
+
 ![Docker](https://github.com/Aziz-Benamira/cyber-anomaly-detection-mlops/actions/workflows/docker.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
