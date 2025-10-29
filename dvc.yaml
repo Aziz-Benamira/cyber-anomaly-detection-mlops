@@ -1,22 +1,137 @@
 stages:
-  preprocess_unsw:
-    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m src.data.preprocess --params C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
-    deps:
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/preprocess.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/dataset.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/schema_unsw.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/raw/UNSW_NB15_training-set.csv
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/raw/UNSW_NB15_testing-set.csv
-    outs:
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed/unsw
-
+  # =========================================================================
+  # STAGE 1: PREPROCESSING
+  # =========================================================================
+  
   preprocess_cicids:
-    cmd: C:/Users/benam/miniconda3/envs/cyber_anom/python.exe -m src.data.preprocess --params C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml --out C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed
+    cmd: python -m src.data.preprocess --dataset CICIDS
     deps:
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/preprocess.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/dataset.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/src/data/schema_cicids.py
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/params.yaml
+      - src/data/preprocess.py
+      - src/data/dataset.py
+      - src/data/schema_cicids.py
+      - data/raw/
+    params:
+      - params.yaml:
+          - preprocessing
     outs:
-      - C:/Users/benam/Downloads/cyber-anomaly-detection-mlops/data/processed/cicids
+      - data/processed/cicids
+
+  preprocess_unsw:
+    cmd: python -m src.data.preprocess --dataset UNSW
+    deps:
+      - src/data/preprocess.py
+      - src/data/dataset.py
+      - src/data/schema_unsw.py
+      - data/raw/UNSW_NB15_training-set.csv
+      - data/raw/UNSW_NB15_testing-set.csv
+    params:
+      - params.yaml:
+          - preprocessing
+    outs:
+      - data/processed/unsw
+
+  # =========================================================================
+  # STAGE 2: TABULAR EXPERT PRETRAINING
+  # =========================================================================
+  
+  pretrain_tabular_cicids:
+    cmd: python -m src.models.train_moe --stage pretrain --dataset CICIDS
+    deps:
+      - src/models/train_moe.py
+      - src/models/ft_transformer.py
+      - src/models/moe_model.py
+      - data/processed/cicids
+    params:
+      - params.yaml:
+          - pretrain.learning_rate
+          - pretrain.epochs
+          - pretrain.batch_size
+    outs:
+      - models/weights/cicids_tabular_pretrained.pt
+
+  pretrain_tabular_unsw:
+    cmd: python -m src.models.train_moe --stage pretrain --dataset UNSW
+    deps:
+      - src/models/train_moe.py
+      - src/models/ft_transformer.py
+      - src/models/moe_model.py
+      - data/processed/unsw
+    params:
+      - params.yaml:
+          - pretrain.learning_rate
+          - pretrain.epochs
+          - pretrain.batch_size
+    outs:
+      - models/weights/unsw_tabular_pretrained.pt
+
+  # =========================================================================
+  # STAGE 3: FULL MOE TRAINING
+  # =========================================================================
+  
+  train_moe_cicids:
+    cmd: python -m src.models.train_moe --stage train --dataset CICIDS
+    deps:
+      - src/models/train_moe.py
+      - src/models/moe_model.py
+      - src/models/temporal_expert.py
+      - src/models/gating_network.py
+      - models/weights/cicids_tabular_pretrained.pt
+      - data/processed/cicids
+    params:
+      - params.yaml:
+          - model.learning_rate
+          - model.batch_size
+          - model.epochs
+          - model.d_token
+          - model.n_blocks
+    outs:
+      - models/weights/cicids_moe_best.pt
+      - models/weights/cicids_moe_final.pt
+    metrics:
+      - reports/cicids_metrics.json:
+          cache: false
+
+  train_moe_unsw:
+    cmd: python -m src.models.train_moe --stage train --dataset UNSW
+    deps:
+      - src/models/train_moe.py
+      - src/models/moe_model.py
+      - src/models/temporal_expert.py
+      - src/models/gating_network.py
+      - models/weights/unsw_tabular_pretrained.pt
+      - data/processed/unsw
+    params:
+      - params.yaml:
+          - model.learning_rate
+          - model.batch_size
+          - model.epochs
+          - model.d_token
+          - model.n_blocks
+    outs:
+      - models/weights/unsw_moe_best.pt
+      - models/weights/unsw_moe_final.pt
+    metrics:
+      - reports/unsw_metrics.json:
+          cache: false
+
+  # =========================================================================
+  # STAGE 4: MODEL REGISTRATION (MLflow)
+  # =========================================================================
+  
+  register_cicids_model:
+    cmd: python scripts/register_model.py register --model-path models/weights/cicids_moe_best.pt --name moe-cybersecurity-cicids --dataset CICIDS --stage Production
+    deps:
+      - scripts/register_model.py
+      - models/weights/cicids_moe_best.pt
+    metrics:
+      - reports/cicids_metrics.json:
+          cache: false
+
+  register_unsw_model:
+    cmd: python scripts/register_model.py register --model-path models/weights/unsw_moe_best.pt --name moe-cybersecurity-unsw --dataset UNSW --stage Staging
+    deps:
+      - scripts/register_model.py
+      - models/weights/unsw_moe_best.pt
+    metrics:
+      - reports/unsw_metrics.json:
+          cache: false
