@@ -1,5 +1,5 @@
 # ============================================================================
-# Docker Compose - MoE MLOps Stack
+# Docker Compose - MoE MLOps Stack with Monitoring
 # ============================================================================
 # Usage:
 #   docker-compose -f docker/docker-compose.yml up          # Start all
@@ -9,7 +9,7 @@
 
 services:
   # ==========================================================================
-  # API Service - Model Serving
+  # API Service - Model Serving with Prometheus Metrics
   # ==========================================================================
   api:
     build:
@@ -27,6 +27,7 @@ services:
       - MODEL_NAME=moe-cybersecurity-cicids
       - MODEL_STAGE=Production
     restart: unless-stopped
+    command: uvicorn src.serving.api_prometheus:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

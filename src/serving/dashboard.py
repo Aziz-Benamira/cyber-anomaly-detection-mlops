@@ -288,8 +288,16 @@ def main():
         )
         
         # Auto-load when selection changes
-        if example_type != "Custom" and example_type != st.session_state.last_example:
-            if example_type in ATTACK_EXAMPLES:
+        if example_type != st.session_state.last_example:
+            if example_type == "Custom":
+                # Switching to Custom - initialize with zeros or keep current
+                if not st.session_state.current_features or st.session_state.last_example != "Custom":
+                    if ATTACK_EXAMPLES:
+                        example_features = list(next(iter(ATTACK_EXAMPLES.values())).keys())
+                        st.session_state.current_features = {f: 0.0 for f in example_features}
+                st.session_state.last_example = "Custom"
+                st.rerun()
+            elif example_type in ATTACK_EXAMPLES:
                 st.session_state.current_features = ATTACK_EXAMPLES[example_type].copy()
                 st.session_state.last_example = example_type
                 st.success(f"✅ Loaded {example_type}!")
@@ -319,13 +327,16 @@ def main():
             # Organize features into categories
             tab_features = st.tabs(["📊 Flow Features (0-23)", "🔄 Forward Features (24-47)", "⬅️ Backward Features (48-71)"])
             
+            # CRITICAL FIX: Read values from number_input and store separately, then update session_state
+            temp_values = {}
+            
             with tab_features[0]:
                 features_chunk = all_features[0:24]
                 cols = st.columns(3)
                 for i, feat in enumerate(features_chunk):
                     with cols[i % 3]:
                         val = st.session_state.current_features[feat]
-                        st.session_state.current_features[feat] = st.number_input(
+                        temp_values[feat] = st.number_input(
                             feat,
                             value=float(val),
                             format="%.6f",
@@ -338,7 +349,7 @@ def main():
                 for i, feat in enumerate(features_chunk):
                     with cols[i % 3]:
                         val = st.session_state.current_features[feat]
-                        st.session_state.current_features[feat] = st.number_input(
+                        temp_values[feat] = st.number_input(
                             feat,
                             value=float(val),
                             format="%.6f",
@@ -351,12 +362,15 @@ def main():
                 for i, feat in enumerate(features_chunk):
                     with cols[i % 3]:
                         val = st.session_state.current_features[feat]
-                        st.session_state.current_features[feat] = st.number_input(
+                        temp_values[feat] = st.number_input(
                             feat,
                             value=float(val),
                             format="%.6f",
                             key=f"custom_{feat}"
                         )
+            
+            # Update session_state with all the values from number_inputs
+            st.session_state.current_features.update(temp_values)
         
         else:
             # Example mode - show key features only
