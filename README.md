@@ -6,6 +6,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+![Platform UI Screenshot](./ui.png) 
 **End-to-end MLOps project for detecting network intrusions and cyber attacks using a Mixture of Experts (MoE) deep learning architecture.**
 
 This project demonstrates a **complete production-ready machine learning system** with model training, deployment, monitoring, and CI/CD automation for cybersecurity threat detection.
